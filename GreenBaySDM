@@ -1,0 +1,294 @@
+options(java.parameters = "-Xmx8000m")
+
+
+require(sf)
+require(terra)
+
+GB_counties<-vect("G:\\GB_SDM\\political\\GB_Counties.shp")
+##Get predictor parameters
+##Currently using this, although WI has 1m resolution that we will substitute in
+require(geodata)
+elev<-elevation_30s('USA',download=TRUE,path="G:\\GB_SDM\\Elevation\\", mask=TRUE)
+plot(elev)
+
+cr.elev<-crop(elev,GB_counties, mask=TRUE)
+
+names(cr.elev)<-"Elevation"
+plot(cr.elev)
+
+slope<-terrain(cr.elev,v='slope',unit='degrees',neighbors=8)
+names(slope)<-"Slope"
+plot(slope)
+
+#############################################
+#############################################
+##Soil properties
+#All soil properties were created from gNATSGO 
+#in ArcMap 10.8.1 usinjg the Soil Data Development Toolbox
+#in Sept 2024 
+
+#sand percent
+sand_MI<-rast("G:\\GB_SDM\\Soil_datasets\\sand_MI_84.tif")
+activeCat(sand_MI)<-6
+sand_MI
+sand_WI<-rast("G:\\GB_SDM\\Soil_datasets\\sand_WI_84.tif")
+ext(sand_MI)
+sand_WI_re<-resample(sand_WI,sand_MI)
+activeCat(sand_MI)<-6
+activeCat(sand_WI_re)<-6
+
+WI_test<-catalyze(sand_WI_re,index=6)
+sand_WI<-WI_test[[6]]
+MI_test<-catalyze(sand_MI,index=6)
+sand_MI<-MI_test[[6]]
+sand<-merge(sand_WI,sand_MI)
+writeRaster(sand,"G:/GB_SDM/Soil_datasets/sand_percent.tif")
+
+sand<-rast("G:\\GB_SDM\\Soil_datasets\\sand_percent.tif")
+
+#soil drainage; merged in ArcMap 10.8
+soil_drain<-rast("G:\\GB_SDM\\Soil_datasets\\soil_drainage_MI_WI.tif")
+
+sd_WI<-catalyze(soil_drain)
+sd_drain<-sd_WI[[2]]
+plot(c(soil_drain,sd_drain))
+writeRaster(sd_drain,"G:/GB_SDM/Soil_datasets/drainage.tif")
+
+##water table
+water_table_MI<-rast("G:\\GB_SDM\\Soil_datasets\\depth_to_watertable_MI_Apr_Sept2.tif")
+water_table_WI<-rast("G:\\GB_SDM\\Soil_datasets\\depth_to_watertable_WI_Apr_Sept.tif")
+
+
+water_table_MI_84<-resample(water_table_MI,sand_MI)
+water_table_WI_re<-resample(water_table_WI,sand_WI)
+plot(water_table_WI_re)
+activeCat(water_table_MI_84) <- 3
+plot(water_table_WI_re)
+plot(water_table_MI_84,add=TRUE)
+wt_MI<-catalyze(water_table_MI_84)
+wt_MI_dep<-wt_MI[[3]]
+plot(wt_MI_dep)
+wt_WI<-catalyze(water_table_WI_re)
+wt_WI_dep<-wt_WI[[1]]
+wt<-merge(wt_MI_dep,wt_WI_dep)
+plot(wt)
+writeRaster(wt,"G:/GB_SDM/Soil_datasets/water_table.tif",overwrite=TRUE)
+wt<-rast("G:/GB_SDM/Soil_datasets/water_table.tif")
+
+##flood freq
+ff_MI<-rast("G:/GB_SDM/Soil_datasets/flood_freq_MI_Apr_Sept.tif")
+ff_WI<-rast("G:/GB_SDM/Soil_datasets/flood_freq_WI_Apr_Sept.tif")
+
+ff_MI_84<-project(ff_MI,sand_MI)
+ff_WI_84<-resample(ff_WI,sand_WI)
+
+plot(c(ff_WI_84, ff_WI_c,ff_WI_NA,ff))
+ff_MI_c<-catalyze(ff_MI_84)
+ff_WI_c<-catalyze(ff_WI_84)
+ff_MI_NA<-ff_MI_c	
+ff_MI_NA[ff_MI_NA==2147483648]<-NA
+plot(ff_MI_NA)
+ff_WI_NA<-ff_WI_c	
+ff_WI_NA[ff_WI_NA==2147483648]<-NA
+plot(ff_WI_NA)
+ff<-merge(ff_MI_NA,ff_WI_NA)
+
+##now reclassify to be ordinal; checked with rasters in ArcMap
+#1=Frequent
+#2=None
+#3=Occasional
+#4=Rare
+v_rec<-matrix(c(.9,1.1,4,
+	1.9,2.1,1,
+	2.9,3.1,3,
+	3.9,4.1,2),ncol=3,byrow=TRUE)
+ff_rec<-classify(ff,v_rec)
+plot(c(ff_WI_c,ff_rec)))
+plot(c(ff_MI_84,ff_WI_84,ff,ff_rec))
+writeRaster(ff_rec,"G:/GB_SDM/Soil_datasets/ff_apr_sep.tif",overwrite=TRUE)
+ff_rec<-rast("G:/GB_SDM/Soil_datasets/ff_apr_sep.tif")
+
+sd_drain_m<-resample(sd_drain,ff_rec)
+plot(c(sand,wt,ff_rec,sd_drain_m))
+soil_params<-c(sand,wt,ff_rec,sd_drain_m)
+writeRaster(soil_params,"G:/GB_SDM/Soil_datasets_final/soil_parameters.tif")
+soil_params<-rast("G:/GB_SDM/Soil_datasets_final/soil_parameters.tif")
+plot(soil_params)
+soils<-crop(soil_params, GB_counties)
+soils<-mask(soils,GB_counties)
+plot(soils)
+names(soils)<-c("SandPercent","DepthtoWaterTable","FloodFreq","DrainClass")
+######################################################
+######################################################
+##landcover params
+
+phrag<-rast("G:\\GB_SDM\\landcover\\GreenBay_mosaic_update.tif")
+phrag_pr<-project(phrag,crs(GB_counties))
+plot(phrag_pr)
+phrag<-classify(phrag_pr,matrix(c(1,17.9,0,17.9,19.9,1,19.9,25,0),ncol=3,byrow=TRUE))
+plot(phrag)
+phrag_m<-crop(phrag,GB_counties,mask=TRUE)
+phrag_re<-resample(phrag_m,predictors[[1]])
+names(phrag_re)<-"Phragmites"
+plot(phrag_re)
+
+imp<-rast("G:\\GB_SDM\\landcover\\nlcd_2019_impervious_l48_20210604.img")
+gb_alb<-project(GB_counties,imp)
+imp_cr<-crop(imp,gb_alb,mask=TRUE)
+plot(imp_cr)
+imp_pr<-project(imp_cr,crs(phrag_m))
+names(imp_pr)<-"PercentImpervious"
+plot(imp_pr)
+
+can<-rast("G:\\GB_SDM\\landcover\\nlcd_tcc_conus_2021_v2021-4.tif")
+gb_nad<-project(GB_counties,can)
+can_cr<-crop(can,gb_nad,mask=TRUE)
+can_pr<-project(can_cr,crs(phrag_m))
+names(can_pr)<-"PercentCanopy"
+can_pr<-clamp(can_pr,upper=100,value=FALSE)
+plot(can_pr)
+##############################################
+##############################################
+#Climatic predictors
+temp_wq<-rast("G:\\GB_SDM\\chelsea\\CHELSA_bio10_1981-2010_V.2.1.tif")
+precip_wq<-rast("G:\\GB_SDM\\chelsea\\CHELSA_bio16_1981-2010_V.2.1.tif")
+
+temp_cr<-crop(temp_wq,GB_counties,mask=TRUE)
+precip_cr<-crop(precip_wq,GB_counties,mask=TRUE)
+
+temp_re<-resample(temp_cr,can_pr)
+precip_re<-resample(precip_cr,can_pr)
+
+names(temp_re)<-"TempWarmQ"
+names(precip_re)<-"PrecipWetQ"
+#############################################
+#############################################
+#Water properties
+#depth from https://www.ngdc.noaa.gov/mgg/greatlakes/michigan/
+depth<-rast("G:\\GB_SDM\\GB_WaterParams\\michigan_lld.geotiff.tar\\michigan_lld\\michigan_lld.tif")
+depth_pr<-project(depth,crs(preds))
+depth_cr<-crop(depth_pr,preds[[1]])
+depth_re<-resample(depth_cr,preds[[1]])
+plot(depth_re)
+depth_m<-mask(depth_re,preds[[1]],inverse=TRUE)
+depth_m<-clamp(depth_m,upper=0,values=FALSE)
+plot(depth_m)
+
+
+dist_coast<-distance(depth_m)
+writeRaster(dist_coast,"G:\\GB_SDM\\GB_WaterParams\\dist_coast.tif")
+dist_coast<-rast("G:/GB_SDM/GB_WaterParams/dist_coast.tif")
+plot(dist_coast)
+dist_coast_cr<-crop(dist_coast,predictors[[1]],mask=TRUE)
+names(dist_coast_cr)<-"Dist2Coast"
+plot(dist_coast_cr)
+
+
+dist_phrag<-distance(phrag_m)
+
+
+elev_re<-resample(cr.elev,can_pr)
+slope_re<-resample(slope,can_pr)
+soils_re<-resample(soils,can_pr)
+predictors<-c(elev_re,slope_re,soils_re,imp_pr,can_pr,temp_re,precip_re)
+pairs(predictors)
+writeRaster(preds,"G:/GB_SDM/preds/predictors2.tif",overwrite=TRUE)
+predictors<-rast("G:/GB_SDM/preds/predictors.tif")
+predictors<-c(predictors,dist_coast_cr)
+names(predictors)
+predictors<-c(predictors[[1:6]],imp_pr,can_pr,predictors[[9:11]],phrag_re)
+
+pairs(predictors)
+require(usdm)
+param_vif<-usdm::vif(predictors)
+param_vif
+plot(predictors)
+
+pred_test<-c(predictors[[2:11]]
+names(pred_test)
+require(spThin)
+
+occ_dir<-"G:\\GB_SDM\\occurrences"
+occ_files<-list.files(occ_dir,pattern=".csv")
+#remove piping plovers, cladophora, and phragmites
+occ_files<-c(occ_files[1:4],occ_files[6:13],occ_files[16:17])
+
+##create a database of all occurrences
+all_occ<-read.csv(paste0(occ_dir,"/",occ_files[1]))
+for(i in 2:length(occ_files)){
+	sp_file<-read.csv(paste0(occ_dir,"/",occ_files[i]))
+	all_occ<-rbind(all_occ,sp_file)
+}
+
+
+all_sf<-st_as_sf(all_occ,
+	coords=c("decimalLongitude","decimalLatitude"))
+all_sf<-st_set_crs(all_sf,crs(GB_counties))
+
+rast_poly<-terra::as.polygons(predictors[[1]])
+all_int<-st_filter(all_sf,st_as_sf(GB_counties))
+
+unique(all_int$species)
+unique(all_int$coordinateUncertaintyInMeters)
+all_int$coordinateUncertaintyInMeters[is.na(all_int$coordinateUncertaintyInMeters)]<-0
+all_int_red<-all_int[which(all_int$coordinateUncertaintyInMeters<=500),]
+
+require(dismo)
+require(spThin)
+
+pred_test2<-pred_test
+pred_test<-pred_test2[[-11]]
+unique(all_int_red$species)
+test<-rast(choose.files())
+plot(test)
+output_dir<-"G:/GB_SDM/MaxEnt_output"
+
+#phragmites layer does not include all of the counties and thus was removed
+#as it introduced too many NA locations
+i<-11
+for(i in 1:length(unique(all_int_red$species))){
+	sp_model<-all_int_red[which(all_int_red$species==unique(all_int_red$species)[i]),]
+	#bg_points<-st_sample(all_int_red[which(all_int_red$species!=unique(all_int_red$species)[i]),],
+	#		size=20000)
+
+
+
+	thinned_pts<-thin.algorithm(st_coordinates(sp_model),thin.par=0.5,rep=1)
+	neg.maxent <- dismo::maxent(raster::stack(pred_test), p= thinned_pts[[1]],
+	#a=data.frame(st_coordinates(bg_points)[,1:2]),
+	removeDuplicates=TRUE, 
+	args=c("betamultiplier=1", "-J", "-P","replicates=1","threads=4"),
+	path=paste0(output_dir,"/",unique(all_int_red$species)[i],"_maxent"))
+
+	output<-paste0(output_dir,"/",unique(all_int_red$species)[i],"_maxent")
+	full.results <- dismo::predict(neg.maxent, raster::stack(pred_test))
+plot(full.results)
+	terra::writeRaster(full.results,
+	paste0(output,"/",unique(all_int_red$species)[i],"_maxent.asc"),overwrite=TRUE)
+	print(unique(all_int_red$species)[[i]])
+}
+
+
+plot(full.results)
+rast_dirs<-list.dirs('G:/GB_SDM/MaxEnt_output', recursive=FALSE)
+sdms<-rast(paste0(rast_dirs[1],"/",list.files(rast_dirs[1],pattern=".asc")))
+plot(sdms)
+for(i in 2:length(rast_dirs)){
+ sdm_rast<-rast(paste0(rast_dirs[i],"/",list.files(rast_dirs[i],pattern=".asc")))
+ sdms<-c(sdms,sdm_rast)
+}
+plot(sdms)
+warnings()
+install.packages('export')
+require(export)
+
+graph2ppt(file="G:\\GB_SDM\\MaxEnt_output\\SDMs.pptx", width=6, height=5) 
+
+sdm_mean<-mean(sdms)
+plot(sdm_mean)
+sdm_sd<-stdev(sdms)
+plot(c(sdm_mean,sdm_sd))
+#####################
+
+
+
